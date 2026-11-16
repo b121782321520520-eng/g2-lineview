@@ -1,7 +1,10 @@
 import { waitForEvenAppBridge, OsEventTypeList, type EvenAppBridge } from '@evenrealities/even_hub_sdk'
 import { rgbaToGray } from './edges'
 import { render, type Mode } from './render'
-import { W, H, createPage, sendFrame, resetTileCache } from './glasses'
+import { W, H, createPage, rebuildPage, sendFrame, setHint, resetTileCache } from './glasses'
+
+const HINT =
+  '线条视界\n\n单击：拍照 / 实时（手机相机已开时）\n长按：线条 → 素描 → 照片 → 测量\n上滑 / 下滑：灵敏度（照片＝亮度）\n双击：退出'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const video = $<HTMLVideoElement>('video')
@@ -44,7 +47,12 @@ function setMode(m: Mode) {
   modeBtns.forEach((b) => b.classList.toggle('on', b.dataset.mode === m))
   onOptionChange()
 }
-modeBtns.forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode as Mode)))
+modeBtns.forEach((b) =>
+  b.addEventListener('click', async () => {
+    if (view === 'measure') await setView('camera')
+    setMode(b.dataset.mode as Mode)
+  }),
+)
 
 {
   const qm = new URLSearchParams(location.search).get('mode') as Mode | null
@@ -69,7 +77,12 @@ async function processAndSend(src: CanvasImageSource, sw: number, sh: number) {
   const t0 = performance.now()
   drawCover(src, sw, sh)
   const { data } = wctx.getImageData(0, 0, W, H)
-  const frame = render(rgbaToGray(data, W, H), W, H, options())
+  return processGray(rgbaToGray(data, W, H), t0)
+}
+
+/** 灰阶画面（W×H，0-255）→ 眼镜 */
+async function processGray(gray: Float32Array, t0 = performance.now()) {
+  const frame = render(gray, W, H, options())
 
   // 手机上的预览：绿色 16 阶，和眼镜看起来一样
   const out = pctx.createImageData(W, H)
@@ -90,8 +103,83 @@ async function processAndSend(src: CanvasImageSource, sw: number, sh: number) {
   return { proc: t1 - t0, send: t2 - t1, sent: ok, total: logs.length, detail }
 }
 
-// ---------- 实时模式（getUserMedia） ----------
+// ---------- 手机「G2 桥接」App（127.0.0.1:8765） ----------
+const BRIDGE_URL = 'http://127.0.0.1:8765'
+let liveSource: 'bridge' | 'webcam' | null = null
+
+async function fetchT(url: string, ms = 2000): Promise<Response> {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), ms)
+  try {
+    return await fetch(url, { signal: ctrl.signal, cache: 'no-store' })
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+async function bridgeCameraRunning(): Promise<boolean> {
+  try {
+    const j = await (await fetchT(`${BRIDGE_URL}/camera.json`, 1500)).json()
+    return !!j.running
+  } catch {
+    return false
+  }
+}
+
+let lastFrameId = ''
+async function fetchBridgeFrame(): Promise<Float32Array | null> {
+  const r = await fetchT(`${BRIDGE_URL}/frame.gray`, 3000)
+  if (!r.ok) return null
+  const id = r.headers.get('X-Frame-Id') || ''
+  if (id && id === lastFrameId) return null
+  lastFrameId = id
+  const b = new Uint8Array(await r.arrayBuffer())
+  if (b.length !== W * H) return null
+  const g = new Float32Array(W * H)
+  for (let i = 0; i < g.length; i++) g[i] = b[i]
+  return g
+}
+
+async function bridgeLoop() {
+  let fails = 0
+  while (running && liveSource === 'bridge') {
+    if (busy) {
+      await new Promise((r) => setTimeout(r, 100))
+      continue
+    }
+    busy = true
+    try {
+      const t0 = performance.now()
+      const g = await fetchBridgeFrame()
+      if (g) {
+        fails = 0
+        const r = await processGray(g, t0)
+        const total = performance.now() - t0
+        status(`实时中（手机相机）· 每帧 ${(total / 1000).toFixed(1)} 秒，更新 ${r.sent}/${r.total} 块`)
+      }
+    } catch (e) {
+      if (++fails >= 3) status('连不上「G2 桥接」App 的相机，请确认它还在执行')
+    } finally {
+      busy = false
+    }
+    await new Promise((r) => setTimeout(r, 100))
+  }
+}
+
+// ---------- 实时模式 ----------
 async function startLive(): Promise<boolean> {
+  if (view === 'measure') setView('camera')
+  // 1) 优先用手机「G2 桥接」App 的实时相机
+  if (await bridgeCameraRunning()) {
+    liveSource = 'bridge'
+    running = true
+    lastSource = null
+    lastFrameId = ''
+    liveBtn.textContent = '暂停'
+    bridgeLoop()
+    return true
+  }
+  // 2) 退而求其次：网页摄像头（Even App 里通常不允许）
   if (!navigator.mediaDevices?.getUserMedia) return false
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -104,6 +192,7 @@ async function startLive(): Promise<boolean> {
   }
   video.srcObject = stream
   await video.play().catch(() => {})
+  liveSource = 'webcam'
   running = true
   lastSource = null
   liveBtn.textContent = '暂停'
@@ -113,21 +202,22 @@ async function startLive(): Promise<boolean> {
 
 function stopLive() {
   running = false
+  liveSource = null
   stream?.getTracks().forEach((t) => t.stop())
   stream = null
   liveBtn.textContent = '开始实时'
 }
 
 function pauseToggle() {
-  if (!stream) return
+  if (!liveSource) return
   running = !running
   liveBtn.textContent = running ? '暂停' : '继续'
-  if (running) loop()
+  if (running) liveSource === 'bridge' ? bridgeLoop() : loop()
   else status('已暂停（单击镜腿继续）')
 }
 
 async function loop() {
-  while (running) {
+  while (running && liveSource === 'webcam') {
     if (busy || video.readyState < 2) {
       await new Promise((r) => setTimeout(r, 100))
       continue
@@ -171,7 +261,8 @@ async function processStill(img: HTMLImageElement) {
 
 async function takeShot() {
   if (busy) return
-  if (stream) stopLive()
+  if (liveSource) stopLive()
+  if (view === 'measure') setView('camera')
   if (!bridge) {
     status('需要在 Even App 里打开才能用相机')
     return
@@ -186,22 +277,97 @@ async function takeShot() {
   await processStill(img)
 }
 
+// ---------- AR 测量模式 ----------
+type View = 'camera' | 'measure'
+let view: View = 'camera'
+let measureTimer: number | null = null
+let lastMeasureText = ''
+const measureBtn = $<HTMLButtonElement>('measure')
+const SEG_LABEL = ['长', '宽', '高']
+
+function fmtCm(cm: number) {
+  return cm >= 100 ? `${(cm / 100).toFixed(2)} m` : `${cm.toFixed(1)} cm`
+}
+
+function measureText(j: any): string {
+  if (!j || !j.active) {
+    return 'AR 测量\n\n请在手机「G2 桥接」App\n按「④ AR 测量」打开测量画面'
+  }
+  const track = j.tracking === 'ok' ? '追踪正常' : j.tracking === 'lost' ? '追踪中断，请慢慢移回' : '寻找平面中…左右慢慢移动'
+  const lines = [`AR 测量 · ${track}`]
+  ;(j.segments as { cm: number }[]).forEach((sg, i) => {
+    lines.push(`${SEG_LABEL[i] ?? `第${i + 1}段`}  ${fmtCm(sg.cm)}`)
+  })
+  if (j.live != null) lines.push(`瞄准中  +${fmtCm(j.live)}`)
+  else if (j.tracking === 'ok' && !j.aim) lines.push('（准星没对到表面）')
+  else if (j.points === 0 && j.tracking === 'ok') lines.push('准星对准第一个角落')
+  lines.push('')
+  lines.push('单击 标点 · 上滑 复原 · 下滑 清除')
+  return lines.join('\n')
+}
+
+async function pollMeasure() {
+  let j: any = null
+  try {
+    j = await (await fetchT(`${BRIDGE_URL}/measure.json`, 1500)).json()
+  } catch {
+    j = null
+  }
+  const text = j ? measureText(j) : 'AR 测量\n\n连不上手机「G2 桥接」App\n请先打开它'
+  if (text !== lastMeasureText) {
+    lastMeasureText = text
+    status(text)
+    if (bridge) await setHint(bridge, text).catch(() => {})
+  }
+}
+
+async function measureCmd(c: 'add' | 'undo' | 'clear') {
+  try {
+    await fetchT(`${BRIDGE_URL}/measure/cmd?c=${c}`, 1500)
+  } catch {}
+  pollMeasure()
+}
+
+async function setView(v: View) {
+  if (v === view) return
+  view = v
+  measureBtn.classList.toggle('on', v === 'measure')
+  modeBtns.forEach((b) => b.classList.toggle('on', v === 'camera' && b.dataset.mode === mode))
+  if (v === 'measure') {
+    if (liveSource) stopLive()
+    lastMeasureText = ''
+    // 换成只有文字的页面（图片会盖住文字）
+    if (bridge) await rebuildPage(bridge, 'text', 'AR 测量\n\n连接中…').catch(() => {})
+    pctx.fillStyle = '#000'
+    pctx.fillRect(0, 0, W, H)
+    await pollMeasure()
+    measureTimer = window.setInterval(pollMeasure, 400)
+  } else {
+    if (measureTimer) clearInterval(measureTimer)
+    measureTimer = null
+    if (bridge) await rebuildPage(bridge, 'image', HINT).catch(() => {})
+    status('已回到画面模式')
+  }
+}
+measureBtn.addEventListener('click', () => setView(view === 'measure' ? 'camera' : 'measure'))
+
 // 调参数时：静态照片立刻重算
 function onOptionChange() {
   $('sensVal').textContent = sens.value
   $('thickVal').textContent = thick.value
   $('brightVal').textContent = bright.value
   try { localStorage.setItem('brightness', bright.value) } catch {}
-  if (!running && lastSource instanceof HTMLImageElement && !busy) processStill(lastSource)
+  if (view === 'camera' && !running && lastSource instanceof HTMLImageElement && !busy) processStill(lastSource)
 }
 sens.addEventListener('input', onOptionChange)
 thick.addEventListener('input', onOptionChange)
 bright.addEventListener('input', onOptionChange)
 
 liveBtn.addEventListener('click', async () => {
-  if (stream) return pauseToggle()
-  status('请求摄像头…')
-  if (!(await startLive())) status('这个环境不能实时拍摄，请改用“拍一张”')
+  if (liveSource) return pauseToggle()
+  status('连接手机相机…')
+  if (!(await startLive()))
+    status('请先打开手机上的「G2 桥接」App，按「③ 开始实时相机」，再回来按“开始实时”')
 })
 shotBtn.addEventListener('click', takeShot)
 
@@ -211,11 +377,20 @@ function onGlassesInput(type: OsEventTypeList | undefined) {
   const t = type ?? OsEventTypeList.CLICK_EVENT
   switch (t) {
     case OsEventTypeList.CLICK_EVENT:
-      if (stream) pauseToggle()
-      else takeShot()
+      if (view === 'measure') measureCmd('add')
+      else if (liveSource) pauseToggle()
+      else
+        bridgeCameraRunning().then((on) => {
+          if (on) startLive()
+          else takeShot()
+        })
       break
     case OsEventTypeList.SCROLL_TOP_EVENT:
     case OsEventTypeList.SCROLL_BOTTOM_EVENT: {
+      if (view === 'measure') {
+        measureCmd(t === OsEventTypeList.SCROLL_TOP_EVENT ? 'undo' : 'clear')
+        break
+      }
       // 照片模式：滑动调亮度；线条、素描：滑动调灵敏度
       const d = t === OsEventTypeList.SCROLL_TOP_EVENT ? 1 : -1
       const el = mode === 'photo' ? bright : sens
@@ -225,11 +400,20 @@ function onGlassesInput(type: OsEventTypeList | undefined) {
       break
     }
     case OsEventTypeList.LONG_PRESS_EVENT:
-      setMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length])
-      status('模式：' + MODE_NAME[mode])
+      // 线条 → 素描 → 照片 → 测量 → 线条…
+      if (view === 'measure') {
+        setView('camera')
+        setMode('lines')
+      } else if (mode === 'photo') {
+        setView('measure')
+      } else {
+        setMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length])
+        status('模式：' + MODE_NAME[mode])
+      }
       break
     case OsEventTypeList.DOUBLE_CLICK_EVENT:
       stopLive()
+      if (measureTimer) clearInterval(measureTimer)
       bridge?.shutDownPageContainer(1)
       break
   }
@@ -253,7 +437,7 @@ async function init() {
 
   let ok = false
   try {
-    ok = await createPage(bridge, '线条视界\n\n单击镜腿：拍照 / 开始\n长按：切换 线条 / 素描 / 照片\n上滑 / 下滑：调灵敏度（照片＝亮度）\n双击：退出')
+    ok = await createPage(bridge, HINT)
   } catch (e) {
     console.warn('createPage failed', e)
   }
@@ -268,12 +452,15 @@ async function init() {
     else if (e.sysEvent) {
       const t = e.sysEvent.eventType
       if (t === OsEventTypeList.FOREGROUND_EXIT_EVENT) {
-        if (running) pauseToggle()
+        if (running && liveSource === 'webcam') pauseToggle()
       } else if (t !== OsEventTypeList.IMU_DATA_REPORT && t !== OsEventTypeList.LONG_PRESS_RELEASE_EVENT) onGlassesInput(t)
     }
   })
   status('已连接眼镜 · 按“开始实时”或单击镜腿')
   console.log('APP_READY')
+
+  // 测试用：网址加 ?view=measure 直接进入测量模式
+  if (new URLSearchParams(location.search).get('view') === 'measure') await setView('measure')
 
   // 测试用：网址加 ?demo 会直接处理一张示范照片
   if (new URLSearchParams(location.search).has('demo')) {

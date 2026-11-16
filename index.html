@@ -29,7 +29,7 @@
   </head>
   <body>
     <main>
-      <h1>G2 线条视界 <small style="font-size:12px;color:#6c9;font-weight:400">v0.4</small></h1>
+      <h1>G2 线条视界 <small style="font-size:12px;color:#6c9;font-weight:400">v0.5</small></h1>
       <div class="screen">
         <canvas id="preview" width="576" height="288"></canvas>
         <span class="tag">眼镜画面预览</span>
@@ -38,6 +38,7 @@
         <button data-mode="lines">线条</button>
         <button data-mode="sketch">素描</button>
         <button data-mode="photo">照片</button>
+        <button id="measure">测量</button>
       </div>
       <div id="status">准备中…</div>
       <div class="row">
@@ -54,8 +55,9 @@
         <input id="thick" type="range" min="0" max="2" value="1" />
       </label>
       <div class="help">
-        眼镜操作：单击＝拍一张（实时中＝暂停 / 继续）　长按＝切换模式　上滑 / 下滑＝调灵敏度（照片模式＝调亮度）　双击＝退出<br />
-        手机请拿稳、镜头朝前。画面每 1～2 秒更新一次。
+        实时模式：先在手机「G2 桥接」App 按「③ 开始实时相机」，再回来按“开始实时”。<br />
+        测量模式：在「G2 桥接」App 按「④ AR 测量」，眼镜会显示长 / 宽 / 高。<br />
+        眼镜操作：单击＝拍一张 / 实时暂停（测量：标点）　长按＝换模式　上滑 / 下滑＝灵敏度、亮度（测量：复原 / 清除）　双击＝退出
       </div>
       <video id="video" playsinline muted autoplay></video>
     </main>

@@ -2,6 +2,7 @@
 import {
   type EvenAppBridge,
   CreateStartUpPageContainer,
+  RebuildPageContainer,
   ImageContainerProperty,
   ImageRawDataUpdate,
   ImageRawDataUpdateResult,
@@ -22,6 +23,51 @@ const TILES = [
   { id: 4, name: 'tile2', x: 0, y: TH },
   { id: 5, name: 'tile3', x: TW, y: TH },
 ]
+
+function textProp(content: string) {
+  return new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: W,
+    height: H,
+    borderWidth: 0,
+    paddingLength: 8,
+    containerID: TEXT_ID,
+    containerName: TEXT_NAME,
+    content,
+    isEventCapture: 1,
+    zOrderIndex: 0,
+  })
+}
+
+function imageProps() {
+  return TILES.map(
+    (t, i) =>
+      new ImageContainerProperty({
+        xPosition: t.x,
+        yPosition: t.y,
+        width: TW,
+        height: TH,
+        containerID: t.id,
+        containerName: t.name,
+        zOrderIndex: i + 1,
+      }),
+  )
+}
+
+/** 切换页面：'image' = 文字底层＋4 块图片；'text' = 只有全屏文字（测量模式用） */
+export async function rebuildPage(bridge: EvenAppBridge, kind: 'image' | 'text', content: string): Promise<boolean> {
+  const images = kind === 'image' ? imageProps() : []
+  const ok = await bridge.rebuildPageContainer(
+    new RebuildPageContainer({
+      containerTotalNum: 1 + images.length,
+      textObject: [textProp(content)],
+      imageObject: images,
+    }),
+  )
+  resetTileCache()
+  return ok
+}
 
 export async function createPage(bridge: EvenAppBridge, hint: string): Promise<boolean> {
   // 底层：全屏文字容器，负责接收镜腿/戒指的点击和滑动
