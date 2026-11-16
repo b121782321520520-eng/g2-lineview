@@ -81,7 +81,7 @@ async function processAndSend(src: CanvasImageSource, sw: number, sh: number) {
 }
 
 /** 灰阶画面（W×H，0-255）→ 眼镜 */
-async function processGray(gray: Float32Array, t0 = performance.now()) {
+async function processGray(gray: Float32Array, t0 = performance.now(), minChange = 0) {
   const frame = render(gray, W, H, options())
 
   // 手机上的预览：绿色 16 阶，和眼镜看起来一样
@@ -94,7 +94,7 @@ async function processGray(gray: Float32Array, t0 = performance.now()) {
   pctx.putImageData(out, 0, 0)
   const t1 = performance.now()
 
-  const logs = bridge ? await sendFrame(bridge, frame) : []
+  const logs = bridge ? await sendFrame(bridge, frame, minChange) : []
   const t2 = performance.now()
   const ok = logs.filter((l) => l.result === 'success').length
   const detail = logs
@@ -151,11 +151,13 @@ async function bridgeLoop() {
     try {
       const t0 = performance.now()
       const g = await fetchBridgeFrame()
-      if (g) {
+      if (g && running && liveSource === 'bridge') {
         fails = 0
-        const r = await processGray(g, t0)
+        // 有 4% 以上像素明显变化才重送该块
+        const r = await processGray(g, t0, 0.04)
         const total = performance.now() - t0
-        status(`实时中（手机相机）· 每帧 ${(total / 1000).toFixed(1)} 秒，更新 ${r.sent}/${r.total} 块`)
+        if (running && liveSource === 'bridge' && view === 'camera')
+          status(`实时中（手机相机 · ${MODE_NAME[mode]}）· 这一帧 ${(total / 1000).toFixed(1)} 秒，更新 ${r.sent}/4 块`)
       }
     } catch (e) {
       if (++fails >= 3) status('连不上「G2 桥接」App 的相机，请确认它还在执行')
