@@ -21,6 +21,9 @@
       label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
       input[type=range] { width: 100%; }
       #status { font-size: 13px; color: #8db; min-height: 1.4em; }
+      .seg { display: flex; gap: 0; border: 1px solid #2f4f2f; border-radius: 10px; overflow: hidden; }
+      .seg button { border-radius: 0; background: #111a11; color: #9cb; font-weight: 500; padding: 10px; }
+      .seg button.on { background: #2fbf5a; color: #021; font-weight: 700; }
       .help { font-size: 12px; color: #7a9; line-height: 1.6; }
     </style>
   </head>
@@ -31,19 +34,24 @@
         <canvas id="preview" width="576" height="288"></canvas>
         <span class="tag">眼镜画面预览</span>
       </div>
+      <div class="seg">
+        <button data-mode="lines">线条</button>
+        <button data-mode="sketch">素描</button>
+        <button data-mode="photo">照片</button>
+      </div>
       <div id="status">准备中…</div>
       <div class="row">
-        <button id="live">开始实时</button>
-        <button id="shot" class="secondary">拍一张</button>
+        <button id="shot">拍一张</button>
+        <button id="live" class="secondary">开始实时</button>
       </div>
-      <label>线条灵敏度：<span id="sensVal">5</span>
+      <label>线条灵敏度（线条、素描模式）：<span id="sensVal">5</span>
         <input id="sens" type="range" min="1" max="10" value="5" />
       </label>
       <label>线条粗细：<span id="thickVal">1</span>
         <input id="thick" type="range" min="0" max="2" value="1" />
       </label>
       <div class="help">
-        眼镜操作：单击＝暂停 / 继续（没有实时画面时＝拍一张）　上滑 / 下滑＝调灵敏度　双击＝退出<br />
+        眼镜操作：单击＝拍一张（实时中＝暂停 / 继续）　长按＝切换模式　上滑 / 下滑＝调灵敏度　双击＝退出<br />
         手机请拿稳、镜头朝前。画面每 1～2 秒更新一次。
       </div>
       <video id="video" playsinline muted autoplay></video>

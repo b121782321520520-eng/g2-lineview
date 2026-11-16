@@ -80,17 +80,18 @@ tileCanvas.width = TW
 tileCanvas.height = TH
 const tileCtx = tileCanvas.getContext('2d')!
 
-/** 把遮罩的一块编码成 PNG（白线黑底；黑色在眼镜上就是不亮） */
-async function encodeTile(mask: Uint8Array, ox: number, oy: number): Promise<{ png: number[]; hash: number }> {
+/** 把画面的一块编码成灰度 PNG（每个像素 0-15 级；0 在眼镜上就是不亮） */
+async function encodeTile(frame: Uint8Array, ox: number, oy: number): Promise<{ png: number[]; hash: number }> {
   const img = tileCtx.createImageData(TW, TH)
   let hash = 2166136261
   for (let y = 0; y < TH; y++) {
     for (let x = 0; x < TW; x++) {
-      const v = mask[(oy + y) * W + (ox + x)] ? 255 : 0
+      const lv = frame[(oy + y) * W + (ox + x)]
+      const v = lv * 17
       const p = (y * TW + x) * 4
       img.data[p] = img.data[p + 1] = img.data[p + 2] = v
       img.data[p + 3] = 255
-      if (v) hash = Math.imul(hash ^ (y * TW + x), 16777619)
+      hash = Math.imul(hash ^ lv, 16777619)
     }
   }
   tileCtx.putImageData(img, 0, 0)
@@ -100,11 +101,11 @@ async function encodeTile(mask: Uint8Array, ox: number, oy: number): Promise<{ p
 }
 
 /** 送一整帧到眼镜。图片必须一张一张送（不能并发）。返回实际送出的块数 */
-export async function sendFrame(bridge: EvenAppBridge, mask: Uint8Array): Promise<number> {
+export async function sendFrame(bridge: EvenAppBridge, frame: Uint8Array): Promise<number> {
   let sent = 0
   for (let i = 0; i < TILES.length; i++) {
     const t = TILES[i]
-    const { png, hash } = await encodeTile(mask, t.x, t.y)
+    const { png, hash } = await encodeTile(frame, t.x, t.y)
     if (lastHash[i] === hash) continue
     const res = await bridge.updateImageRawData(
       new ImageRawDataUpdate({ containerID: t.id, containerName: t.name, imageData: png }),

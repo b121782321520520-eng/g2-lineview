@@ -1,5 +1,6 @@
 import { waitForEvenAppBridge, OsEventTypeList, type EvenAppBridge } from '@evenrealities/even_hub_sdk'
-import { detectEdges, rgbaToGray } from './edges'
+import { rgbaToGray } from './edges'
+import { render, type Mode } from './render'
 import { W, H, createPage, sendFrame, resetTileCache } from './glasses'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
@@ -28,7 +29,23 @@ const status = (s: string) => {
   console.log('[status]', s)
 }
 
-const options = () => ({ sensitivity: +sens.value, thickness: +thick.value })
+const MODES: Mode[] = ['lines', 'sketch', 'photo']
+const MODE_NAME: Record<Mode, string> = { lines: '线条', sketch: '素描', photo: '照片' }
+let mode: Mode = (localStorage.getItem('mode') as Mode) || 'sketch'
+const modeBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-mode]'))
+function setMode(m: Mode) {
+  mode = m
+  try { localStorage.setItem('mode', m) } catch {}
+  modeBtns.forEach((b) => b.classList.toggle('on', b.dataset.mode === m))
+  onOptionChange()
+}
+modeBtns.forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode as Mode)))
+
+{
+  const qm = new URLSearchParams(location.search).get('mode') as Mode | null
+  if (qm && ['lines', 'sketch', 'photo'].includes(qm)) mode = qm
+}
+const options = () => ({ mode, sensitivity: +sens.value, thickness: +thick.value })
 
 /** 把任意来源（视频帧 / 照片）裁成 2:1 画到工作画布上 */
 function drawCover(src: CanvasImageSource, sw: number, sh: number) {
@@ -47,20 +64,20 @@ async function processAndSend(src: CanvasImageSource, sw: number, sh: number) {
   const t0 = performance.now()
   drawCover(src, sw, sh)
   const { data } = wctx.getImageData(0, 0, W, H)
-  const mask = detectEdges(rgbaToGray(data, W, H), W, H, options())
+  const frame = render(rgbaToGray(data, W, H), W, H, options())
 
-  // 手机上的预览：绿线黑底，和眼镜看起来一样
+  // 手机上的预览：绿色 16 阶，和眼镜看起来一样
   const out = pctx.createImageData(W, H)
-  for (let i = 0; i < mask.length; i++) {
+  for (let i = 0; i < frame.length; i++) {
     const p = i * 4
-    out.data[p + 1] = mask[i] ? 255 : 0
+    out.data[p + 1] = frame[i] * 17
     out.data[p + 3] = 255
   }
   pctx.putImageData(out, 0, 0)
   const t1 = performance.now()
 
   let sent = 0
-  if (bridge) sent = await sendFrame(bridge, mask)
+  if (bridge) sent = await sendFrame(bridge, frame)
   const t2 = performance.now()
   return { proc: t1 - t0, send: t2 - t1, sent }
 }
@@ -182,11 +199,7 @@ function onGlassesInput(type: OsEventTypeList | undefined) {
   switch (t) {
     case OsEventTypeList.CLICK_EVENT:
       if (stream) pauseToggle()
-      else if (lastSource === null) {
-        startLive().then((ok) => {
-          if (!ok) takeShot()
-        })
-      } else takeShot()
+      else takeShot()
       break
     case OsEventTypeList.SCROLL_TOP_EVENT:
       sens.value = String(Math.min(10, +sens.value + 1))
@@ -195,6 +208,10 @@ function onGlassesInput(type: OsEventTypeList | undefined) {
     case OsEventTypeList.SCROLL_BOTTOM_EVENT:
       sens.value = String(Math.max(1, +sens.value - 1))
       onOptionChange()
+      break
+    case OsEventTypeList.LONG_PRESS_EVENT:
+      setMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length])
+      status('模式：' + MODE_NAME[mode])
       break
     case OsEventTypeList.DOUBLE_CLICK_EVENT:
       stopLive()
@@ -221,7 +238,7 @@ async function init() {
 
   let ok = false
   try {
-    ok = await createPage(bridge, '线条视界\n\n单击镜腿：开始\n上滑 / 下滑：调灵敏度\n双击：退出')
+    ok = await createPage(bridge, '线条视界\n\n单击镜腿：拍照 / 开始\n长按：切换 线条 / 素描 / 照片\n上滑 / 下滑：调灵敏度\n双击：退出')
   } catch (e) {
     console.warn('createPage failed', e)
   }
@@ -237,7 +254,7 @@ async function init() {
       const t = e.sysEvent.eventType
       if (t === OsEventTypeList.FOREGROUND_EXIT_EVENT) {
         if (running) pauseToggle()
-      } else if (t !== OsEventTypeList.IMU_DATA_REPORT) onGlassesInput(t)
+      } else if (t !== OsEventTypeList.IMU_DATA_REPORT && t !== OsEventTypeList.LONG_PRESS_RELEASE_EVENT) onGlassesInput(t)
     }
   })
   status('已连接眼镜 · 按“开始实时”或单击镜腿')
@@ -250,4 +267,5 @@ async function init() {
   }
 }
 
+setMode(mode)
 init()
