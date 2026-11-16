@@ -7,6 +7,16 @@ export interface RenderOptions {
   mode: Mode
   sensitivity: number // 1-10
   thickness: number // 0-2
+  brightness: number // 1-10，10 = 原本的亮度
+}
+
+/** 整体亮度缩放（保留最暗的非 0 亮度至少 1 级，免得细节整片消失） */
+function applyBrightness(f: Uint8Array, b: number): Uint8Array {
+  const k = Math.min(10, Math.max(1, b)) / 10
+  for (let i = 0; i < f.length; i++) {
+    if (f[i]) f[i] = Math.max(1, Math.round(f[i] * k))
+  }
+  return f
 }
 
 /** 去掉面积太小的零碎线段（8 连通） */
@@ -146,6 +156,10 @@ export function dither(v: Float32Array, w: number, h: number, maxLevel: number):
 }
 
 export function render(gray: Float32Array, w: number, h: number, opt: RenderOptions): Uint8Array {
+  return applyBrightness(renderRaw(gray, w, h, opt), opt.brightness)
+}
+
+function renderRaw(gray: Float32Array, w: number, h: number, opt: RenderOptions): Uint8Array {
   const out = new Uint8Array(w * h)
 
   if (opt.mode === 'photo') {

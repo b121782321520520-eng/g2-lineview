@@ -12,6 +12,11 @@ const liveBtn = $<HTMLButtonElement>('live')
 const shotBtn = $<HTMLButtonElement>('shot')
 const sens = $<HTMLInputElement>('sens')
 const thick = $<HTMLInputElement>('thick')
+const bright = $<HTMLInputElement>('bright')
+try {
+  const saved = localStorage.getItem('brightness')
+  if (saved) bright.value = saved
+} catch {}
 
 const work = document.createElement('canvas')
 work.width = W
@@ -45,7 +50,7 @@ modeBtns.forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode
   const qm = new URLSearchParams(location.search).get('mode') as Mode | null
   if (qm && ['lines', 'sketch', 'photo'].includes(qm)) mode = qm
 }
-const options = () => ({ mode, sensitivity: +sens.value, thickness: +thick.value })
+const options = () => ({ mode, sensitivity: +sens.value, thickness: +thick.value, brightness: +bright.value })
 
 /** 把任意来源（视频帧 / 照片）裁成 2:1 画到工作画布上 */
 function drawCover(src: CanvasImageSource, sw: number, sh: number) {
@@ -185,10 +190,13 @@ async function takeShot() {
 function onOptionChange() {
   $('sensVal').textContent = sens.value
   $('thickVal').textContent = thick.value
+  $('brightVal').textContent = bright.value
+  try { localStorage.setItem('brightness', bright.value) } catch {}
   if (!running && lastSource instanceof HTMLImageElement && !busy) processStill(lastSource)
 }
 sens.addEventListener('input', onOptionChange)
 thick.addEventListener('input', onOptionChange)
+bright.addEventListener('input', onOptionChange)
 
 liveBtn.addEventListener('click', async () => {
   if (stream) return pauseToggle()
@@ -207,13 +215,15 @@ function onGlassesInput(type: OsEventTypeList | undefined) {
       else takeShot()
       break
     case OsEventTypeList.SCROLL_TOP_EVENT:
-      sens.value = String(Math.min(10, +sens.value + 1))
+    case OsEventTypeList.SCROLL_BOTTOM_EVENT: {
+      // 照片模式：滑动调亮度；线条、素描：滑动调灵敏度
+      const d = t === OsEventTypeList.SCROLL_TOP_EVENT ? 1 : -1
+      const el = mode === 'photo' ? bright : sens
+      el.value = String(Math.min(10, Math.max(1, +el.value + d)))
       onOptionChange()
+      status((mode === 'photo' ? '亮度：' : '灵敏度：') + el.value)
       break
-    case OsEventTypeList.SCROLL_BOTTOM_EVENT:
-      sens.value = String(Math.max(1, +sens.value - 1))
-      onOptionChange()
-      break
+    }
     case OsEventTypeList.LONG_PRESS_EVENT:
       setMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length])
       status('模式：' + MODE_NAME[mode])
@@ -243,7 +253,7 @@ async function init() {
 
   let ok = false
   try {
-    ok = await createPage(bridge, '线条视界\n\n单击镜腿：拍照 / 开始\n长按：切换 线条 / 素描 / 照片\n上滑 / 下滑：调灵敏度\n双击：退出')
+    ok = await createPage(bridge, '线条视界\n\n单击镜腿：拍照 / 开始\n长按：切换 线条 / 素描 / 照片\n上滑 / 下滑：调灵敏度（照片＝亮度）\n双击：退出')
   } catch (e) {
     console.warn('createPage failed', e)
   }
