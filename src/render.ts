@@ -66,8 +66,38 @@ function stretch(gray: Float32Array): Float32Array {
   return out
 }
 
-/** Floyd–Steinberg 抖色到 levels 阶，maxLevel 为最亮的级数 */
-function dither(v: Float32Array, w: number, h: number, maxLevel: number): Uint8Array {
+/** 平滑量化（不抖色）：同色区块连成一片，传输时压缩率高很多 */
+function quantize(v: Float32Array, maxLevel: number): Uint8Array {
+  const out = new Uint8Array(v.length)
+  for (let i = 0; i < v.length; i++) out[i] = Math.round(Math.max(0, Math.min(1, v[i])) * maxLevel)
+  return out
+}
+
+/** 轻微模糊，去掉噪点，让色块更平整 */
+function smooth(v: Float32Array, w: number, h: number): Float32Array {
+  const out = new Float32Array(v.length)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0
+      let n = 0
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = y + dy
+        if (yy < 0 || yy >= h) continue
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx
+          if (xx < 0 || xx >= w) continue
+          s += v[yy * w + xx]
+          n++
+        }
+      }
+      out[y * w + x] = s / n
+    }
+  }
+  return out
+}
+
+/** Floyd–Steinberg 抖色到 levels 阶，maxLevel 为最亮的级数（目前未使用，保留） */
+export function dither(v: Float32Array, w: number, h: number, maxLevel: number): Uint8Array {
   const buf = new Float32Array(v)
   const out = new Uint8Array(w * h)
   for (let y = 0; y < h; y++) {
@@ -93,9 +123,10 @@ export function render(gray: Float32Array, w: number, h: number, opt: RenderOpti
 
   if (opt.mode === 'photo') {
     // 照片：16 阶灰度。稍微压暗（gamma），眼镜上亮的地方会挡视线
-    const s = stretch(gray)
+    // 最亮只到 12 级，避免窗户、白墙整片刺眼挡视线
+    const s = smooth(stretch(gray), w, h)
     for (let i = 0; i < s.length; i++) s[i] = Math.pow(s[i], 1.4)
-    return dither(s, w, h, 15)
+    return quantize(s, 12)
   }
 
   let edges = detectEdges(gray, w, h, { sensitivity: opt.sensitivity, thickness: 0 })
@@ -104,8 +135,8 @@ export function render(gray: Float32Array, w: number, h: number, opt: RenderOpti
 
   if (opt.mode === 'sketch') {
     // 素描：淡淡的明暗（最亮只到 5 级）＋最亮的轮廓线
-    const s = stretch(gray)
-    const shade = dither(s, w, h, 5)
+    const s = smooth(stretch(gray), w, h)
+    const shade = quantize(s, 5)
     for (let i = 0; i < out.length; i++) out[i] = edges[i] ? 15 : shade[i]
     return out
   }
