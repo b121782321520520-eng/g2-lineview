@@ -76,10 +76,13 @@ async function processAndSend(src: CanvasImageSource, sw: number, sh: number) {
   pctx.putImageData(out, 0, 0)
   const t1 = performance.now()
 
-  let sent = 0
-  if (bridge) sent = await sendFrame(bridge, frame)
+  const logs = bridge ? await sendFrame(bridge, frame) : []
   const t2 = performance.now()
-  return { proc: t1 - t0, send: t2 - t1, sent }
+  const ok = logs.filter((l) => l.result === 'success').length
+  const detail = logs
+    .map((l) => `#${l.tile + 1} ${(l.ms / 1000).toFixed(1)}s ${(l.bytes / 1024).toFixed(0)}KB ${l.result === 'success' ? '✓' : l.result}`)
+    .join('；')
+  return { proc: t1 - t0, send: t2 - t1, sent: ok, total: logs.length, detail }
 }
 
 // ---------- 实时模式（getUserMedia） ----------
@@ -153,7 +156,9 @@ async function processStill(img: HTMLImageElement) {
   try {
     status('处理中…')
     const r = await processAndSend(img, img.naturalWidth, img.naturalHeight)
-    status(`已显示 · 处理 ${r.proc.toFixed(0)}ms，传送 ${r.send.toFixed(0)}ms`)
+    status(
+      `已显示 · 处理 ${r.proc.toFixed(0)}ms，传送 ${r.send.toFixed(0)}ms，成功 ${r.sent}/${r.total} 块\n${r.detail || '（画面没变，没有重送）'}`,
+    )
   } finally {
     busy = false
   }

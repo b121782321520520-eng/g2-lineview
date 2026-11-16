@@ -100,22 +100,35 @@ async function encodeTile(frame: Uint8Array, ox: number, oy: number): Promise<{ 
   return { png, hash: hash >>> 0 }
 }
 
-/** 送一整帧到眼镜。图片必须一张一张送（不能并发）。返回实际送出的块数 */
-export async function sendFrame(bridge: EvenAppBridge, frame: Uint8Array): Promise<number> {
-  let sent = 0
+export interface TileLog {
+  tile: number
+  ms: number
+  bytes: number
+  result: string
+}
+
+/** 送一整帧到眼镜。图片必须一张一张送（不能并发）。返回每一块的记录 */
+export async function sendFrame(bridge: EvenAppBridge, frame: Uint8Array): Promise<TileLog[]> {
+  const logs: TileLog[] = []
   for (let i = 0; i < TILES.length; i++) {
     const t = TILES[i]
     const { png, hash } = await encodeTile(frame, t.x, t.y)
     if (lastHash[i] === hash) continue
-    const res = await bridge.updateImageRawData(
-      new ImageRawDataUpdate({ containerID: t.id, containerName: t.name, imageData: png }),
-    )
-    if (ImageRawDataUpdateResult.isSuccess(ImageRawDataUpdateResult.normalize(res))) {
-      lastHash[i] = hash
-      sent++
-    } else {
-      console.warn('[glasses] tile', i, 'failed:', res)
+    const t0 = performance.now()
+    let result = ''
+    try {
+      const res = await bridge.updateImageRawData(
+        new ImageRawDataUpdate({ containerID: t.id, containerName: t.name, imageData: png }),
+      )
+      const norm = ImageRawDataUpdateResult.normalize(res)
+      result = String(norm)
+      if (ImageRawDataUpdateResult.isSuccess(norm)) lastHash[i] = hash
+    } catch (e) {
+      result = 'error: ' + e
     }
+    const log = { tile: i, ms: Math.round(performance.now() - t0), bytes: png.length, result }
+    console.log('[glasses] tile', log)
+    logs.push(log)
   }
-  return sent
+  return logs
 }
