@@ -73,6 +73,33 @@ function quantize(v: Float32Array, maxLevel: number): Uint8Array {
   return out
 }
 
+/** 降成 1/f 分辨率（区块平均）再放大回来：相邻像素相同，蓝牙传输量大减 */
+function blocky(v: Float32Array, w: number, h: number, f: number): Float32Array {
+  const out = new Float32Array(v.length)
+  for (let by = 0; by < h; by += f) {
+    for (let bx = 0; bx < w; bx += f) {
+      let s = 0
+      let n = 0
+      for (let y = by; y < Math.min(h, by + f); y++)
+        for (let x = bx; x < Math.min(w, bx + f); x++) { s += v[y * w + x]; n++ }
+      const a = s / n
+      for (let y = by; y < Math.min(h, by + f); y++)
+        for (let x = bx; x < Math.min(w, bx + f); x++) out[y * w + x] = a
+    }
+  }
+  return out
+}
+
+/** 量化成 steps 种亮度，最亮对应 maxLevel 级 */
+function posterize(v: Float32Array, steps: number, maxLevel: number): Uint8Array {
+  const out = new Uint8Array(v.length)
+  for (let i = 0; i < v.length; i++) {
+    const q = Math.round(Math.max(0, Math.min(1, v[i])) * (steps - 1)) / (steps - 1)
+    out[i] = Math.round(q * maxLevel)
+  }
+  return out
+}
+
 /** 轻微模糊，去掉噪点，让色块更平整 */
 function smooth(v: Float32Array, w: number, h: number): Float32Array {
   const out = new Float32Array(v.length)
@@ -124,9 +151,10 @@ export function render(gray: Float32Array, w: number, h: number, opt: RenderOpti
   if (opt.mode === 'photo') {
     // 照片：16 阶灰度。稍微压暗（gamma），眼镜上亮的地方会挡视线
     // 最亮只到 12 级，避免窗户、白墙整片刺眼挡视线
-    const s = smooth(stretch(gray), w, h)
+    // 蓝牙每秒只能传约 10KB：用半分辨率＋8 种亮度，一张约 10KB ≈ 1 秒
+    const s = blocky(stretch(gray), w, h, 2)
     for (let i = 0; i < s.length; i++) s[i] = Math.pow(s[i], 1.4)
-    return quantize(s, 12)
+    return posterize(s, 8, 12)
   }
 
   let edges = detectEdges(gray, w, h, { sensitivity: opt.sensitivity, thickness: 0 })
@@ -135,8 +163,9 @@ export function render(gray: Float32Array, w: number, h: number, opt: RenderOpti
 
   if (opt.mode === 'sketch') {
     // 素描：淡淡的明暗（最亮只到 5 级）＋最亮的轮廓线
-    const s = smooth(stretch(gray), w, h)
-    const shade = quantize(s, 5)
+    // 明暗用半分辨率、6 种亮度（最亮 5 级）；轮廓线保持全分辨率
+    const s = blocky(stretch(gray), w, h, 2)
+    const shade = posterize(s, 6, 5)
     for (let i = 0; i < out.length; i++) out[i] = edges[i] ? 15 : shade[i]
     return out
   }
