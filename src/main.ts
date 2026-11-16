@@ -293,7 +293,13 @@ function fmtCm(cm: number) {
 
 function measureText(j: any): string {
   if (!j || !j.active) {
-    return 'AR 测量\n\n请在手机「G2 桥接」App\n按「④ AR 测量」打开测量画面'
+    const segs = (j?.segments ?? []) as { cm: number }[]
+    if (!segs.length) return 'AR 测量\n\n请在手机「G2 桥接」App\n按「④ AR 测量」打开测量画面'
+    // 测量画面已关闭：保留最后一次的结果
+    const lines = ['AR 测量 · 最后一次结果']
+    segs.forEach((sg, i) => lines.push(`${SEG_LABEL[i] ?? `第${i + 1}段`}  ${fmtCm(sg.cm)}`))
+    lines.push('', '（要继续量，请在手机按「④ AR 测量」）')
+    return lines.join('\n')
   }
   const track = j.tracking === 'ok' ? '追踪正常' : j.tracking === 'lost' ? '追踪中断，请慢慢移回' : '寻找平面中…左右慢慢移动'
   const lines = [`AR 测量 · ${track}`]
