@@ -22,14 +22,14 @@
       input[type=range] { width: 100%; }
       #status { font-size: 13px; color: #8db; min-height: 1.4em; white-space: pre-line; }
       .seg { display: flex; gap: 0; border: 1px solid #2f4f2f; border-radius: 10px; overflow: hidden; }
-      .seg button { border-radius: 0; background: #111a11; color: #9cb; font-weight: 500; padding: 10px; }
+      .seg button { border-radius: 0; background: #111a11; color: #9cb; font-weight: 500; padding: 10px 2px; font-size: 15px; }
       .seg button.on { background: #2fbf5a; color: #021; font-weight: 700; }
       .help { font-size: 12px; color: #7a9; line-height: 1.6; }
     </style>
   </head>
   <body>
     <main>
-      <h1>G2 线条视界 <small style="font-size:12px;color:#6c9;font-weight:400">v0.5.2</small></h1>
+      <h1>G2 线条视界 <small style="font-size:12px;color:#6c9;font-weight:400">v0.6</small></h1>
       <div class="screen">
         <canvas id="preview" width="576" height="288"></canvas>
         <span class="tag">眼镜画面预览</span>
@@ -39,6 +39,7 @@
         <button data-mode="sketch">素描</button>
         <button data-mode="photo">照片</button>
         <button id="measure">测量</button>
+        <button id="plan">平面图</button>
       </div>
       <div id="status">准备中…</div>
       <div class="row">
@@ -57,7 +58,8 @@
       <div class="help">
         实时模式：先在手机「G2 桥接」App 按「③ 开始实时相机」，再回来按“开始实时”。<br />
         测量模式：在「G2 桥接」App 按「④ AR 测量」，眼镜会显示长 / 宽 / 高。<br />
-        眼镜操作：单击＝拍一张 / 实时暂停（测量：标点）　长按＝换模式　上滑 / 下滑＝灵敏度、亮度（测量：复原 / 清除）　双击＝退出
+        平面图模式：在「G2 桥接」App 按「⑤ 仓库平面图」，边走边标货架；眼镜会显示平面图和你的位置。<br />
+        眼镜操作：单击＝拍一张 / 实时暂停（测量、平面图：标点）　长按＝换模式　上滑＝灵敏度 / 亮度（测量、平面图：复原）　下滑（测量：清除；平面图：全图 / 跟随我）　双击＝退出
       </div>
       <video id="video" playsinline muted autoplay></video>
     </main>

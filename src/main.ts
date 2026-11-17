@@ -4,7 +4,7 @@ import { render, type Mode } from './render'
 import { W, H, createPage, rebuildPage, sendFrame, setHint, resetTileCache } from './glasses'
 
 const HINT =
-  '线条视界\n\n单击：拍照 / 实时（手机相机已开时）\n长按：线条 → 素描 → 照片 → 测量\n上滑 / 下滑：灵敏度（照片＝亮度）\n双击：退出'
+  '线条视界\n\n单击：拍照 / 实时（手机相机已开时）\n长按：线条 → 素描 → 照片 → 测量 → 平面图\n上滑 / 下滑：灵敏度（照片＝亮度）\n双击：退出'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const video = $<HTMLVideoElement>('video')
@@ -49,7 +49,7 @@ function setMode(m: Mode) {
 }
 modeBtns.forEach((b) =>
   b.addEventListener('click', async () => {
-    if (view === 'measure') await setView('camera')
+    if (view !== 'camera') await setView('camera')
     setMode(b.dataset.mode as Mode)
   }),
 )
@@ -170,7 +170,7 @@ async function bridgeLoop() {
 
 // ---------- 实时模式 ----------
 async function startLive(): Promise<boolean> {
-  if (view === 'measure') setView('camera')
+  if (view !== 'camera') await setView('camera')
   // 1) 优先用手机「G2 桥接」App 的实时相机
   if (await bridgeCameraRunning()) {
     liveSource = 'bridge'
@@ -264,7 +264,7 @@ async function processStill(img: HTMLImageElement) {
 async function takeShot() {
   if (busy) return
   if (liveSource) stopLive()
-  if (view === 'measure') setView('camera')
+  if (view !== 'camera') await setView('camera')
   if (!bridge) {
     status('需要在 Even App 里打开才能用相机')
     return
@@ -280,12 +280,19 @@ async function takeShot() {
 }
 
 // ---------- AR 测量模式 ----------
-type View = 'camera' | 'measure'
+type View = 'camera' | 'measure' | 'plan'
 let view: View = 'camera'
 let measureTimer: number | null = null
 let lastMeasureText = ''
 const measureBtn = $<HTMLButtonElement>('measure')
 const SEG_LABEL = ['长', '宽', '高']
+const planBtn = $<HTMLButtonElement>('plan')
+let planTimer: number | null = null
+let planBusy = false
+let lastPlanId = ''
+
+/** 手机 App 传来的名称是繁体，眼镜上统一显示简体 */
+const toSimp = (t: string) => t.replace(/長/g, '长').replace(/寬/g, '宽')
 
 function fmtCm(cm: number) {
   return cm >= 100 ? `${(cm / 100).toFixed(2)} m` : `${cm.toFixed(1)} cm`
@@ -297,20 +304,20 @@ function measureText(j: any): string {
     if (!segs.length) return 'AR 测量\n\n请在手机「G2 桥接」App\n按「④ AR 测量」打开测量画面'
     // 测量画面已关闭：保留最后一次的结果
     const lines = ['AR 测量 · 最后一次结果']
-    segs.forEach((sg, i) => lines.push(`${SEG_LABEL[i] ?? `第${i + 1}段`}  ${fmtCm(sg.cm)}`))
+    segs.forEach((sg: any, i) => lines.push(`${sg.label ? toSimp(sg.label) : SEG_LABEL[i] ?? `第${i + 1}段`}  ${fmtCm(sg.cm)}`))
     lines.push('', '（要继续量，请在手机按「④ AR 测量」）')
     return lines.join('\n')
   }
   const track = j.tracking === 'ok' ? '追踪正常' : j.tracking === 'lost' ? '追踪中断，请慢慢移回' : '寻找平面中…左右慢慢移动'
   const lines = [`AR 测量 · ${track}`]
-  ;(j.segments as { cm: number }[]).forEach((sg, i) => {
-    lines.push(`${SEG_LABEL[i] ?? `第${i + 1}段`}  ${fmtCm(sg.cm)}`)
+  ;(j.segments as { cm: number; label?: string }[]).forEach((sg, i) => {
+    lines.push(`${sg.label ? toSimp(sg.label) : SEG_LABEL[i] ?? `第${i + 1}段`}  ${fmtCm(sg.cm)}`)
   })
   if (j.live != null) lines.push(`瞄准中  +${fmtCm(j.live)}`)
   else if (j.tracking === 'ok' && !j.aim) lines.push('（准星没对到表面）')
   else if (j.points === 0 && j.tracking === 'ok') lines.push('准星对准第一个角落')
   lines.push('')
-  lines.push('单击 标点 · 上滑 复原 · 下滑 清除')
+  lines.push('单击 标点 · 上滑 复原 · 下滑 清除 · 长按 换模式')
   return lines.join('\n')
 }
 
@@ -336,11 +343,74 @@ async function measureCmd(c: 'add' | 'undo' | 'clear') {
   pollMeasure()
 }
 
+// ---------- 仓库平面图模式 ----------
+async function pollPlan() {
+  if (planBusy || view !== 'plan') return
+  planBusy = true
+  try {
+    const [jr, gr] = await Promise.all([
+      fetchT(`${BRIDGE_URL}/plan.json`, 2000),
+      fetchT(`${BRIDGE_URL}/plan.gray`, 3000),
+    ])
+    const j = await jr.json()
+    const id = gr.headers.get('X-Frame-Id') || ''
+    const b = new Uint8Array(await gr.arrayBuffer())
+    if (view !== 'plan') return
+    if (b.length === W * H && id !== lastPlanId) {
+      lastPlanId = id
+      const k = Math.min(10, Math.max(1, +bright.value)) / 10
+      const frame = new Uint8Array(W * H)
+      const out = pctx.createImageData(W, H)
+      for (let i = 0; i < frame.length; i++) {
+        const lv = Math.round(b[i] / 17)
+        frame[i] = lv ? Math.max(1, Math.round(lv * k)) : 0
+        out.data[i * 4 + 1] = frame[i] * 17
+        out.data[i * 4 + 3] = 255
+      }
+      pctx.putImageData(out, 0, 0)
+      if (bridge) await sendFrame(bridge, frame, 0.003)
+    }
+    const counts = `货架 ${j.racks} 排（${j.bays} 格）· 地堆 ${j.floorStacks} · 柱子 ${j.columns} · 墙 ${j.walls} · 门 ${j.doors}`
+    status(
+      j.active
+        ? `平面图 · ${j.toolName}${j.zoomFollow ? ' · 跟随我' : ' · 全图'}\n${j.prompt}\n${counts}`
+        : `平面图（手机「G2 桥接」按「⑤ 仓库平面图」开始标）\n${counts}`,
+    )
+  } catch {
+    status('平面图：连不上手机「G2 桥接」App，请先打开它')
+  } finally {
+    planBusy = false
+  }
+}
+
+async function planCmd(c: 'add' | 'undo' | 'zoom') {
+  try {
+    await fetchT(`${BRIDGE_URL}/plan/cmd?c=${c}`, 1500)
+  } catch {}
+  lastPlanId = ''
+  setTimeout(pollPlan, 150)
+}
+
 async function setView(v: View) {
   if (v === view) return
+  const prev = view
   view = v
   measureBtn.classList.toggle('on', v === 'measure')
+  planBtn.classList.toggle('on', v === 'plan')
   modeBtns.forEach((b) => b.classList.toggle('on', v === 'camera' && b.dataset.mode === mode))
+  if (planTimer) clearInterval(planTimer)
+  planTimer = null
+  if (measureTimer) clearInterval(measureTimer)
+  measureTimer = null
+  if (v === 'plan') {
+    if (liveSource) stopLive()
+    if (prev === 'measure' && bridge) await rebuildPage(bridge, 'image', '平面图\n\n连接中…').catch(() => {})
+    resetTileCache()
+    lastPlanId = ''
+    await pollPlan()
+    planTimer = window.setInterval(pollPlan, 700)
+    return
+  }
   if (v === 'measure') {
     if (liveSource) stopLive()
     lastMeasureText = ''
@@ -351,13 +421,13 @@ async function setView(v: View) {
     await pollMeasure()
     measureTimer = window.setInterval(pollMeasure, 400)
   } else {
-    if (measureTimer) clearInterval(measureTimer)
-    measureTimer = null
-    if (bridge) await rebuildPage(bridge, 'image', HINT).catch(() => {})
+    if (prev === 'measure' && bridge) await rebuildPage(bridge, 'image', HINT).catch(() => {})
+    resetTileCache()
     status('已回到画面模式')
   }
 }
 measureBtn.addEventListener('click', () => setView(view === 'measure' ? 'camera' : 'measure'))
+planBtn.addEventListener('click', () => setView(view === 'plan' ? 'camera' : 'plan'))
 
 // 调参数时：静态照片立刻重算
 function onOptionChange() {
@@ -386,6 +456,7 @@ function onGlassesInput(type: OsEventTypeList | undefined) {
   switch (t) {
     case OsEventTypeList.CLICK_EVENT:
       if (view === 'measure') measureCmd('add')
+      else if (view === 'plan') planCmd('add')
       else if (liveSource) pauseToggle()
       else
         bridgeCameraRunning().then((on) => {
@@ -399,6 +470,10 @@ function onGlassesInput(type: OsEventTypeList | undefined) {
         measureCmd(t === OsEventTypeList.SCROLL_TOP_EVENT ? 'undo' : 'clear')
         break
       }
+      if (view === 'plan') {
+        planCmd(t === OsEventTypeList.SCROLL_TOP_EVENT ? 'undo' : 'zoom')
+        break
+      }
       // 照片模式：滑动调亮度；线条、素描：滑动调灵敏度
       const d = t === OsEventTypeList.SCROLL_TOP_EVENT ? 1 : -1
       const el = mode === 'photo' ? bright : sens
@@ -408,10 +483,11 @@ function onGlassesInput(type: OsEventTypeList | undefined) {
       break
     }
     case OsEventTypeList.LONG_PRESS_EVENT:
-      // 线条 → 素描 → 照片 → 测量 → 线条…
+      // 线条 → 素描 → 照片 → 测量 → 平面图 → 线条…
       if (view === 'measure') {
-        setView('camera')
-        setMode('lines')
+        setView('plan')
+      } else if (view === 'plan') {
+        setView('camera').then(() => setMode('lines'))
       } else if (mode === 'photo') {
         setView('measure')
       } else {
@@ -422,6 +498,7 @@ function onGlassesInput(type: OsEventTypeList | undefined) {
     case OsEventTypeList.DOUBLE_CLICK_EVENT:
       stopLive()
       if (measureTimer) clearInterval(measureTimer)
+      if (planTimer) clearInterval(planTimer)
       bridge?.shutDownPageContainer(1)
       break
   }
@@ -468,7 +545,8 @@ async function init() {
   console.log('APP_READY')
 
   // 测试用：网址加 ?view=measure 直接进入测量模式
-  if (new URLSearchParams(location.search).get('view') === 'measure') await setView('measure')
+  const qv = new URLSearchParams(location.search).get('view')
+  if (qv === 'measure' || qv === 'plan') await setView(qv)
 
   // 测试用：网址加 ?demo 会直接处理一张示范照片
   if (new URLSearchParams(location.search).has('demo')) {
